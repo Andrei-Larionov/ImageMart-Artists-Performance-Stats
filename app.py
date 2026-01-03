@@ -1,5 +1,5 @@
-import io
 import time
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -10,8 +10,8 @@ import streamlit as st
 # Page config
 # =========================================================
 st.set_page_config(
-    page_title="Artist Job Completion Dashboard",
-    layout="wide"
+    page_title="Artist Job Buckets Dashboard",
+    layout="wide",
 )
 
 
@@ -43,8 +43,8 @@ if not st.session_state.authed:
 # =========================================================
 # App header
 # =========================================================
-st.title("Artist job completion distribution")
-st.caption("Bucketed job completion times (hours)")
+st.title("Artist job time distributions (bucketed)")
+st.caption("Pick a dataset and an artist to view the distribution. Labels show count + % share.")
 
 
 # =========================================================
@@ -55,199 +55,102 @@ BUCKET_ORDER = [
     "51-60", "61-70", "71-80", "81-90", "91-100", "z100+"
 ]
 
-
-# =========================================================
-# Hardcoded TSV data
-# =========================================================
-RAW_TSV = """artist\tbucket\tjobs_count
-Anastasia\t00-10\t41
-Anastasia\t11-20\t143
-Anastasia\t21-30\t27
-Anastasia\t31-40\t18
-Anastasia\t41-50\t8
-Anastasia\t51-60\t1
-Anastasia\t61-70\t2
-Anastasia\t91-100\t1
-Anastasia\tz100+\t3
-Elena N.\t00-10\t67
-Elena N.\t11-20\t153
-Elena N.\t21-30\t255
-Elena N.\t31-40\t33
-Elena N.\t41-50\t38
-Elena N.\t51-60\t15
-Elena N.\t61-70\t54
-Elena N.\t71-80\t61
-Elena N.\t81-90\t11
-Elena N.\t91-100\t21
-Elena N.\tz100+\t71
-Elena P.\t00-10\t329
-Elena P.\t11-20\t557
-Elena P.\t21-30\t105
-Elena P.\t31-40\t126
-Elena P.\t41-50\t172
-Elena P.\t51-60\t38
-Elena P.\t61-70\t156
-Elena P.\t71-80\t20
-Elena P.\t81-90\t58
-Elena P.\t91-100\t35
-Elena P.\tz100+\t51
-Fedosey\t00-10\t70
-Fedosey\t11-20\t14
-Fedosey\t21-30\t70
-Fedosey\t31-40\t56
-Fedosey\t41-50\t40
-Fedosey\t51-60\t60
-Fedosey\t61-70\t11
-Fedosey\t71-80\t73
-Fedosey\t81-90\t30
-Fedosey\t91-100\t50
-Fedosey\tz100+\t237
-Ksenia\t00-10\t117
-Ksenia\t11-20\t43
-Ksenia\t21-30\t72
-Ksenia\t31-40\t20
-Ksenia\t41-50\t30
-Ksenia\t51-60\t14
-Ksenia\t61-70\t10
-Ksenia\t71-80\t12
-Ksenia\t81-90\t1
-Ksenia\t91-100\t14
-Ksenia\tz100+\t33
-Maksim\t00-10\t58
-Maksim\t11-20\t44
-Maksim\t21-30\t113
-Maksim\t31-40\t46
-Maksim\t41-50\t114
-Maksim\t51-60\t49
-Maksim\t61-70\t58
-Maksim\t71-80\t48
-Maksim\t81-90\t16
-Maksim\t91-100\t33
-Maksim\tz100+\t60
-Oksana\t00-10\t765
-Oksana\t11-20\t248
-Oksana\t21-30\t66
-Oksana\t31-40\t12
-Oksana\t41-50\t11
-Oksana\t51-60\t2
-Oksana\t61-70\t6
-Oksana\t71-80\t3
-Oksana\t81-90\t2
-Oksana\t91-100\t5
-Oksana\tz100+\t21
-Olga B\t00-10\t98
-Olga B\t11-20\t43
-Olga B\t21-30\t159
-Olga B\t31-40\t41
-Olga B\t41-50\t147
-Olga B\t51-60\t80
-Olga B\t61-70\t77
-Olga B\t71-80\t93
-Olga B\t81-90\t44
-Olga B\t91-100\t77
-Olga B\tz100+\t113
-Yulia\t00-10\t97
-Yulia\t11-20\t176
-Yulia\t21-30\t61
-Yulia\t31-40\t27
-Yulia\t41-50\t15
-Yulia\t51-60\t7
-Yulia\t61-70\t9
-Yulia\t81-90\t1
-Yulia\tz100+\t9
-"""
+BUCKET_ORDER_DISPLAY = [b.replace("z100+", "100+") for b in BUCKET_ORDER]
 
 
 # =========================================================
-# Load & normalize data
+# Files (expected to be in repo root)
 # =========================================================
-df = pd.read_csv(io.StringIO(RAW_TSV), sep="\t")
-df["jobs_count"] = df["jobs_count"].astype(int)
-
-df["bucket"] = pd.Categorical(
-    df["bucket"],
-    categories=BUCKET_ORDER,
-    ordered=True
-)
+COMPLETE_CSV = Path("time_to_complete.csv")
+START_CSV = Path("time_to_start.csv")
 
 
 # =========================================================
-# Controls
+# Load data (cached)
 # =========================================================
-artists = sorted(df["artist"].unique())
+@st.cache_data(show_spinner=False)
+def load_dataset(csv_path: str) -> pd.DataFrame:
+    p = Path(csv_path)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Missing file: {p}. Put it in the same folder as app.py (repo root)."
+        )
 
-c1, c2, c3 = st.columns([2, 2, 3])
+    df = pd.read_csv(p)
 
-with c1:
-    selected_artist = st.selectbox("Artist", artists)
+    expected = {"artist", "bucket", "jobs_count"}
+    if not expected.issubset(set(df.columns)):
+        raise ValueError(
+            f"{p} must have columns: artist, bucket, jobs_count. Found: {list(df.columns)}"
+        )
 
-with c2:
-    animate = st.checkbox("Animate bars", value=True)
+    df = df.copy()
+    df["jobs_count"] = pd.to_numeric(df["jobs_count"], errors="coerce").fillna(0).astype(int)
 
-with c3:
-    speed = st.slider("Animation speed", min_value=0.02, max_value=0.35, value=0.08, step=0.01)
+    # Enforce bucket ordering
+    df["bucket"] = pd.Categorical(df["bucket"], categories=BUCKET_ORDER, ordered=True)
 
-
-# =========================================================
-# Prepare artist data (ensure all buckets exist)
-# =========================================================
-artist_df = df[df["artist"] == selected_artist][["bucket", "jobs_count"]]
-
-full = pd.DataFrame({"bucket": BUCKET_ORDER})
-full["bucket"] = pd.Categorical(full["bucket"], BUCKET_ORDER, ordered=True)
-
-artist_df = (
-    full
-    .merge(artist_df, on="bucket", how="left")
-    .fillna({"jobs_count": 0})
-)
-
-artist_df["jobs_count"] = artist_df["jobs_count"].astype(int)
+    return df
 
 
-# =========================================================
-# Metrics
-# =========================================================
-total_jobs = int(artist_df["jobs_count"].sum())
-over_100 = int(artist_df.loc[artist_df["bucket"] == "z100+", "jobs_count"].sum())
+def ensure_all_buckets(artist_data: pd.DataFrame) -> pd.DataFrame:
+    """Ensure every bucket exists for the artist (missing buckets become 0)."""
+    full = pd.DataFrame({"bucket": BUCKET_ORDER})
+    full["bucket"] = pd.Categorical(full["bucket"], categories=BUCKET_ORDER, ordered=True)
 
-m1, m2, m3 = st.columns(3)
-m1.metric("Total completed jobs", f"{total_jobs}")
-m2.metric("100+ hour jobs", f"{over_100}")
-m3.metric("100+ share", f"{(over_100 / total_jobs * 100):.1f}%" if total_jobs else "—")
-
-
-# =========================================================
-# Chart function (FIXED: force categorical axis)
-# =========================================================
-def build_chart(data: pd.DataFrame):
-    plot_df = data.copy()
-
-    # Convert to plain strings and clean the z100+ label
-    plot_df["bucket_label"] = (
-        plot_df["bucket"]
-        .astype(str)
-        .replace({"z100+": "100+"})
+    out = (
+        full.merge(artist_data[["bucket", "jobs_count"]], on="bucket", how="left")
+        .fillna({"jobs_count": 0})
     )
+    out["jobs_count"] = out["jobs_count"].astype(int)
+    return out
 
-    # Desired display order
-    bucket_order_display = [b.replace("z100+", "100+") for b in BUCKET_ORDER]
 
+def add_percent_share(df: pd.DataFrame) -> pd.DataFrame:
+    """Add pct_share and label columns based on total jobs for selected artist."""
+    out = df.copy()
+    total = int(out["jobs_count"].sum())
+    if total > 0:
+        out["pct_share"] = out["jobs_count"] / total * 100.0
+    else:
+        out["pct_share"] = 0.0
+
+    # Nice label for chart: "58 (12.3%)"
+    out["label"] = out.apply(lambda r: f"{int(r['jobs_count'])} ({r['pct_share']:.1f}%)", axis=1)
+
+    # Display-friendly bucket label (turn z100+ into 100+)
+    out["bucket_label"] = out["bucket"].astype(str).replace({"z100+": "100+"})
+
+    return out
+
+
+def build_chart(plot_df: pd.DataFrame, artist: str, dataset_label: str):
     fig = px.bar(
         plot_df,
         x="bucket_label",
         y="jobs_count",
-        text="jobs_count",
-        title=f"Completion time distribution — {selected_artist}",
-        category_orders={"bucket_label": bucket_order_display},
+        text="label",
+        title=f"{dataset_label} distribution — {artist}",
+        category_orders={"bucket_label": BUCKET_ORDER_DISPLAY},
     )
 
-    # Force categorical axis so Plotly doesn't parse values as datetime
+    # Force categorical axis so Plotly doesn't treat labels like dates/times
     fig.update_xaxes(type="category")
 
-    fig.update_traces(textposition="outside", cliponaxis=False)
+    # Make tooltips show both count and share cleanly
+    fig.update_traces(
+        hovertemplate=(
+            "<b>Bucket:</b> %{x}<br>"
+            "<b>Jobs:</b> %{y}<br>"
+            "<b>Share:</b> %{customdata[0]:.1f}%<extra></extra>"
+        ),
+        customdata=plot_df[["pct_share"]].to_numpy(),
+        textposition="outside",
+        cliponaxis=False,
+    )
+
     fig.update_layout(
-        xaxis_title="Hours to complete (bucket)",
+        xaxis_title="Hours (bucket)",
         yaxis_title="Jobs count",
         height=520,
         bargap=0.25,
@@ -258,24 +161,96 @@ def build_chart(data: pd.DataFrame):
 
 
 # =========================================================
-# Render chart (animated or static)
+# Load both datasets
+# =========================================================
+try:
+    df_complete = load_dataset(str(COMPLETE_CSV))
+    df_start = load_dataset(str(START_CSV))
+except Exception as e:
+    st.error(str(e))
+    st.stop()
+
+DATASETS = {
+    "Time to complete": df_complete,
+    "Time to start": df_start,
+}
+
+
+# =========================================================
+# Controls (dataset switch + artist select)
+# =========================================================
+all_artists = sorted(
+    set(df_complete["artist"].unique().tolist()) | set(df_start["artist"].unique().tolist())
+)
+
+left, right = st.columns([2, 3])
+
+with left:
+    selected_dataset_name = st.radio(
+        "Dataset",
+        options=list(DATASETS.keys()),
+        horizontal=True,
+    )
+
+with right:
+    selected_artist = st.selectbox("Artist", all_artists)
+
+current_df = DATASETS[selected_dataset_name]
+
+
+# =========================================================
+# Filter & normalize for selected artist
+# =========================================================
+artist_raw = current_df[current_df["artist"] == selected_artist].copy()
+
+if artist_raw.empty:
+    # Artist not present in this dataset: show zeros
+    artist_df = pd.DataFrame({"bucket": BUCKET_ORDER, "jobs_count": [0] * len(BUCKET_ORDER)})
+    artist_df["bucket"] = pd.Categorical(artist_df["bucket"], categories=BUCKET_ORDER, ordered=True)
+else:
+    artist_df = ensure_all_buckets(artist_raw)
+
+artist_df = add_percent_share(artist_df)
+
+
+# =========================================================
+# Metrics
+# =========================================================
+total_jobs = int(artist_df["jobs_count"].sum())
+over_100 = int(artist_df.loc[artist_df["bucket"] == "z100+", "jobs_count"].sum())
+
+m1, m2, m3 = st.columns(3)
+m1.metric("Total jobs (selected dataset)", f"{total_jobs}")
+m2.metric("100+ hour jobs", f"{over_100}")
+m3.metric("100+ share", f"{(over_100 / total_jobs * 100):.1f}%" if total_jobs else "—")
+
+
+# =========================================================
+# Always-on animation (fixed speed, no UI controls)
 # =========================================================
 placeholder = st.empty()
+ANIMATION_SLEEP_SECONDS = 0.07
 
-if not animate:
-    placeholder.plotly_chart(build_chart(artist_df), use_container_width=True)
-else:
-    # "Build up" animation: gradually reveal more buckets left-to-right
-    for i in range(1, len(artist_df) + 1):
-        partial = artist_df.iloc[:i].copy()
-        placeholder.plotly_chart(build_chart(partial), use_container_width=True)
-        time.sleep(speed)
+for i in range(1, len(artist_df) + 1):
+    partial = artist_df.iloc[:i].copy()
+    placeholder.plotly_chart(
+        build_chart(partial, selected_artist, selected_dataset_name),
+        use_container_width=True,
+    )
+    time.sleep(ANIMATION_SLEEP_SECONDS)
 
 
 # =========================================================
-# Data table (optional)
+# Data table (counts + % share)
 # =========================================================
 with st.expander("Show underlying data"):
-    display_df = artist_df.copy()
-    display_df["bucket"] = display_df["bucket"].astype(str).replace({"z100+": "100+"})
-    st.dataframe(display_df, use_container_width=True)
+    table_df = artist_df[["bucket_label", "jobs_count", "pct_share"]].copy()
+    table_df = table_df.rename(
+        columns={
+            "bucket_label": "bucket",
+            "jobs_count": "jobs_count",
+            "pct_share": "pct_share_percent",
+        }
+    )
+    table_df["pct_share_percent"] = table_df["pct_share_percent"].map(lambda x: round(float(x), 2))
+    st.dataframe(table_df, use_container_width=True)
