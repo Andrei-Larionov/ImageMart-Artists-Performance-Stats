@@ -176,13 +176,16 @@ df["bucket"] = pd.Categorical(
 # =========================================================
 artists = sorted(df["artist"].unique())
 
-c1, c2 = st.columns([2, 3])
+c1, c2, c3 = st.columns([2, 2, 3])
 
 with c1:
     selected_artist = st.selectbox("Artist", artists)
 
 with c2:
     animate = st.checkbox("Animate bars", value=True)
+
+with c3:
+    speed = st.slider("Animation speed", min_value=0.02, max_value=0.35, value=0.08, step=0.01)
 
 
 # =========================================================
@@ -205,36 +208,50 @@ artist_df["jobs_count"] = artist_df["jobs_count"].astype(int)
 # =========================================================
 # Metrics
 # =========================================================
-total_jobs = artist_df["jobs_count"].sum()
-over_100 = artist_df.loc[artist_df["bucket"] == "z100+", "jobs_count"].sum()
+total_jobs = int(artist_df["jobs_count"].sum())
+over_100 = int(artist_df.loc[artist_df["bucket"] == "z100+", "jobs_count"].sum())
 
 m1, m2, m3 = st.columns(3)
-m1.metric("Total completed jobs", total_jobs)
-m2.metric("100+ hour jobs", over_100)
+m1.metric("Total completed jobs", f"{total_jobs}")
+m2.metric("100+ hour jobs", f"{over_100}")
 m3.metric("100+ share", f"{(over_100 / total_jobs * 100):.1f}%" if total_jobs else "—")
 
 
 # =========================================================
-# Chart function
+# Chart function (FIXED: force categorical axis)
 # =========================================================
-def build_chart(data):
+def build_chart(data: pd.DataFrame):
     plot_df = data.copy()
-    plot_df["bucket"] = plot_df["bucket"].astype(str).replace({"z100+": "100+"})
+
+    # Convert to plain strings and clean the z100+ label
+    plot_df["bucket_label"] = (
+        plot_df["bucket"]
+        .astype(str)
+        .replace({"z100+": "100+"})
+    )
+
+    # Desired display order
+    bucket_order_display = [b.replace("z100+", "100+") for b in BUCKET_ORDER]
 
     fig = px.bar(
         plot_df,
-        x="bucket",
+        x="bucket_label",
         y="jobs_count",
         text="jobs_count",
-        title=f"Completion time distribution — {selected_artist}"
+        title=f"Completion time distribution — {selected_artist}",
+        category_orders={"bucket_label": bucket_order_display},
     )
+
+    # Force categorical axis so Plotly doesn't parse values as datetime
+    fig.update_xaxes(type="category")
 
     fig.update_traces(textposition="outside", cliponaxis=False)
     fig.update_layout(
-        xaxis_title="Hours to complete",
+        xaxis_title="Hours to complete (bucket)",
         yaxis_title="Jobs count",
         height=520,
-        bargap=0.25
+        bargap=0.25,
+        margin=dict(l=40, r=40, t=60, b=40),
     )
 
     return fig
@@ -248,10 +265,11 @@ placeholder = st.empty()
 if not animate:
     placeholder.plotly_chart(build_chart(artist_df), use_container_width=True)
 else:
+    # "Build up" animation: gradually reveal more buckets left-to-right
     for i in range(1, len(artist_df) + 1):
-        partial = artist_df.iloc[:i]
+        partial = artist_df.iloc[:i].copy()
         placeholder.plotly_chart(build_chart(partial), use_container_width=True)
-        time.sleep(0.07)
+        time.sleep(speed)
 
 
 # =========================================================
